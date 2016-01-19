@@ -10,7 +10,7 @@ import org.apache.spark.{SparkConf, SparkContext}
 object PerformanceTest {
 
   val MATRIX_SIZE = 1024
-  val samples = 10;
+  val samples = 10
 
   def main(args: Array[String]): Unit = {
     val conf = new SparkConf()
@@ -54,9 +54,8 @@ object PerformanceTest {
     val newRuns = (1 to samples).map(_ => runNew())
     spark.stop()
 
-    printStatistics("Old", oldRuns)
-    printStatistics("New", newRuns)
-
+    printStatistics("Current situation", oldRuns)
+    printStatistics("Improved situation", newRuns)
   }
 
 
