@@ -13,8 +13,9 @@ object PerformanceTest {
   val samples = 10;
 
   def main(args: Array[String]): Unit = {
-    println("Hello, world!")
-    val conf = new SparkConf().setMaster("local[*]").setAppName("BlockMatrix to IndexedRowMatrix")
+    val conf = new SparkConf()
+      .setMaster("local[*]")
+      .setAppName("BlockMatrix to IndexedRowMatrix")
     val spark = new SparkContext(conf)
 
     val blocks = Seq(
@@ -79,19 +80,20 @@ object PerformanceTest {
     val rows = thisMatrix.blocks.map(block => (block._1._1, (block._1._2, block._2)))
       .groupByKey()
       .flatMap { case (row, matricesItr) =>
-        val rowsPerBlock = thisMatrix.rowsPerBlock
 
-        val res = DenseMatrix.zeros[Double](rowsPerBlock, numCols)
+        val rows = matricesItr.head._2.numRows
+        val res = DenseMatrix.zeros[Double](rows, numCols)
 
         matricesItr.foreach { case ((idx: Int, mat: Matrix)) =>
           val offset = colsPerBlock * idx
-          res(0 until rowsPerBlock, offset until offset + colsPerBlock) := mat.toBreeze
+          res(0 until mat.numRows, offset until offset + mat.numCols) := mat.toBreeze
         }
 
-        (0 until rowsPerBlock).map(idx => new IndexedRow((row * rowsPerBlock) + idx, Vectors.dense(res.t(::, idx).toArray)))
+        (0 until rows).map(idx => new IndexedRow((row * rowsPerBlock) + idx, Vectors.dense(res.t(::, idx).toArray)))
       }
 
     new IndexedRowMatrix(rows)
   }
+
 
 }
