@@ -2,17 +2,18 @@
 
 Apache Spark BlockMatrix to IndexedRowMatrix conversion performance test.
   
-    Results for: Current situation
-    Mean: 18517 (std.dev. 392.0471910369975)
+    Results for: Current
+    Mean: 18729 (std.dev. 1054.990995222234)
     
-    Results for: Improved situation
-    Mean: 978 (std.dev. 122.72734006732159)
+    Results for: Improved Fullrow
+    Mean: 1662 (std.dev. 301.4614403203169) 11.27 times faster
+    
+    Results for: Improved Blockrow
+    Mean: 1162 (std.dev. 114.01315713548152) 16.18 times faster
 
-Which is an improvement of almost 19 times for a dense matrix. The performance gain is mostly by sending (parts of) the vector instead of individual elements.
+The first iteration 'Improved Fullrow' provided an increment of 11 times for a dense matrix. The performance gain is obtained by shuffling chuncks of the vector instead of individual values of the matrix around the cluster. The second iteration (Improved Blockrow) is proven to be 16 times faster. The second shuffles the rows of the blocks arround, and them consolidates them into a single vector which is then converted to an IndexedRow.
 
-If you don't trust the numbers, you can execute the test yourself by invoking `sbt run`.
-
-A test is included which has been copied from the original Spark repository and can be executed using `sbt test`.
+If you don't trust the numbers, you can execute the test yourself by invoking `sbt run`. Also, tests are included, which has been copied from the original Spark repository and can be executed using `sbt test`.
 
     Java HotSpot(TM) 64-Bit Server VM warning: ignoring option PermSize=128M; support was removed in 8.0
     Java HotSpot(TM) 64-Bit Server VM warning: ignoring option MaxPermSize=1g; support was removed in 8.0

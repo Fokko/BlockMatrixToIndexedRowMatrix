@@ -1,6 +1,6 @@
 package org.apache.spark.mllib.linalg.distributed
 
-import breeze.linalg.DenseMatrix
+import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV}
 import org.apache.spark.mllib.linalg.{Matrices, Matrix, Vectors}
 import org.apache.spark.{SparkConf, SparkContext}
 
@@ -9,53 +9,86 @@ import org.apache.spark.{SparkConf, SparkContext}
   */
 object PerformanceTest {
 
+  implicit class BlockMatrixImprovements(thisMatrix: BlockMatrix) {
+    implicit def toIndexedRowMatrixOptimizedFullrow: IndexedRowMatrix = {
+      val numCols = thisMatrix.numCols().toInt
+      val rowsPerBlock = thisMatrix.rowsPerBlock
+      val colsPerBlock = thisMatrix.colsPerBlock
+
+      val rows = thisMatrix.blocks.map(block => (block._1._1, (block._1._2, block._2)))
+        .groupByKey()
+        .flatMap { case (row, matricesItr) =>
+
+          val rows = matricesItr.head._2.numRows
+          val res = BDM.zeros[Double](rows, numCols)
+
+          matricesItr.foreach { case ((idx: Int, mat: Matrix)) =>
+            val offset = colsPerBlock * idx
+            res(0 until mat.numRows, offset until offset + mat.numCols) := mat.toBreeze
+          }
+
+          (0 until rows).map(idx => new IndexedRow((row * rowsPerBlock) + idx, Vectors.dense(res.t(::, idx).toArray)))
+        }
+
+      new IndexedRowMatrix(rows)
+    }
+
+    implicit def toIndexedRowMatrixOptimizedBlockrow: IndexedRowMatrix = {
+      val numCols = thisMatrix.numCols().toInt
+      val rowsPerBlock = thisMatrix.rowsPerBlock
+      val colsPerBlock = thisMatrix.colsPerBlock
+
+      val rows = thisMatrix.blocks.flatMap { case ((blockRowIdx, blockColIdx), mat) =>
+        val dMat = mat.toBreeze.toDenseMatrix.t
+        (0 until mat.numRows).map(rowIds =>
+          blockRowIdx * rowsPerBlock + rowIds ->(blockColIdx, dMat(::, rowIds).toDenseVector)
+        )
+      }.groupByKey().map { case (rowIdx, vectors) =>
+        val wholeVector = BDV.zeros[Double](numCols)
+        vectors.foreach { case (blockColIdx: Int, vec: BDV[Double]) =>
+          val offset = colsPerBlock * blockColIdx
+          wholeVector(offset until offset + vec.length) := vec
+        }
+        new IndexedRow(rowIdx, Vectors.fromBreeze(wholeVector))
+      }
+      new IndexedRowMatrix(rows)
+    }
+  }
+
   val MATRIX_SIZE = 1024
+  val MATRIX_NUM = 3
   val samples = 10
 
   def main(args: Array[String]): Unit = {
     val conf = new SparkConf()
       .setMaster("local[*]")
       .setAppName("BlockMatrix to IndexedRowMatrix")
+
     val spark = new SparkContext(conf)
 
-    val blocks = Seq(
-      ((0, 0), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, DenseMatrix.rand(MATRIX_SIZE, MATRIX_SIZE).data)),
-      ((0, 1), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, DenseMatrix.rand(MATRIX_SIZE, MATRIX_SIZE).data)),
-      ((0, 2), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, DenseMatrix.rand(MATRIX_SIZE, MATRIX_SIZE).data)),
-      ((1, 0), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, DenseMatrix.rand(MATRIX_SIZE, MATRIX_SIZE).data)),
-      ((1, 1), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, DenseMatrix.rand(MATRIX_SIZE, MATRIX_SIZE).data)),
-      ((1, 2), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, DenseMatrix.rand(MATRIX_SIZE, MATRIX_SIZE).data)),
-      ((2, 0), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, DenseMatrix.rand(MATRIX_SIZE, MATRIX_SIZE).data)),
-      ((2, 1), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, DenseMatrix.rand(MATRIX_SIZE, MATRIX_SIZE).data)),
-      ((2, 2), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, DenseMatrix.rand(MATRIX_SIZE, MATRIX_SIZE).data))
-    )
+    val size = (0 until MATRIX_NUM).toArray
 
-    val mat = new BlockMatrix(spark.parallelize(blocks), MATRIX_SIZE, MATRIX_SIZE).cache()
+    val blocksRdd = spark.parallelize(size).cartesian(spark.parallelize(size)).map(pos => {
+      ((pos._1, pos._2), Matrices.dense(MATRIX_SIZE, MATRIX_SIZE, BDM.rand(MATRIX_SIZE, MATRIX_SIZE).data))
+    })
 
+    val mat = new BlockMatrix(blocksRdd, MATRIX_SIZE, MATRIX_SIZE).cache()
 
-    def runOld(): Long = {
+    def compute(callable: () => Long): Long = {
       val start = System.currentTimeMillis()
-
-      println(mat.toIndexedRowMatrix().rows.count)
-
-
+      assert(callable() == MATRIX_SIZE * MATRIX_NUM)
       System.currentTimeMillis() - start
     }
 
-    def runNew(): Long = {
-      val start = System.currentTimeMillis()
+    val oldRuns = (1 to samples).map(_ => compute(mat.toIndexedRowMatrix().rows.count))
+    val newRunsFullrow = (1 to samples).map(_ => compute(mat.toIndexedRowMatrixOptimizedFullrow.rows.count))
+    val newRunsBlockrow = (1 to samples).map(_ => compute(mat.toIndexedRowMatrixOptimizedBlockrow.rows.count))
 
-      println(toIndexedRowMatrixOptimized(mat).rows.count)
-
-      System.currentTimeMillis() - start
-    }
-
-    val oldRuns = (1 to samples).map(_ => runOld())
-    val newRuns = (1 to samples).map(_ => runNew())
     spark.stop()
 
     printStatistics("Current situation", oldRuns)
-    printStatistics("Improved situation", newRuns)
+    printStatistics("Improved Fullrow situation", newRunsFullrow)
+    printStatistics("Improved Blockrow situation", newRunsBlockrow)
   }
 
 
@@ -69,30 +102,5 @@ object PerformanceTest {
     println(s"Mean: ${mean} (std.dev. ${stddev})")
     println()
   }
-
-
-  def toIndexedRowMatrixOptimized(thisMatrix: BlockMatrix): IndexedRowMatrix = {
-    val numCols = thisMatrix.numCols().toInt
-    val rowsPerBlock = thisMatrix.rowsPerBlock
-    val colsPerBlock = thisMatrix.colsPerBlock
-
-    val rows = thisMatrix.blocks.map(block => (block._1._1, (block._1._2, block._2)))
-      .groupByKey()
-      .flatMap { case (row, matricesItr) =>
-
-        val rows = matricesItr.head._2.numRows
-        val res = DenseMatrix.zeros[Double](rows, numCols)
-
-        matricesItr.foreach { case ((idx: Int, mat: Matrix)) =>
-          val offset = colsPerBlock * idx
-          res(0 until mat.numRows, offset until offset + mat.numCols) := mat.toBreeze
-        }
-
-        (0 until rows).map(idx => new IndexedRow((row * rowsPerBlock) + idx, Vectors.dense(res.t(::, idx).toArray)))
-      }
-
-    new IndexedRowMatrix(rows)
-  }
-
 
 }

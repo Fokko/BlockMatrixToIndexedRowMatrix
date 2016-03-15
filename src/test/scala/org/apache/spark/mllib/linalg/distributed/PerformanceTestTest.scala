@@ -1,6 +1,6 @@
 package org.apache.spark.mllib.linalg.distributed
 
-import breeze.linalg.{DenseMatrix => BDM}
+
 import org.apache.spark.mllib.linalg.{DenseMatrix, Matrix}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.scalatest.{BeforeAndAfter, FlatSpec, Matchers}
@@ -9,14 +9,15 @@ import org.scalatest.{BeforeAndAfter, FlatSpec, Matchers}
   * Created by Fokko Driesprong on 1/19/16.
   */
 class PerformanceTestTest extends FlatSpec with Matchers with BeforeAndAfter {
+  import org.apache.spark.mllib.linalg.distributed.PerformanceTest._
 
   val conf = new SparkConf()
-    .setMaster("local[*]")
+    .setMaster("local[1]")
     .setAppName("BlockMatrix to IndexedRowMatrix")
   val spark = new SparkContext(conf)
 
-  "More efficient transformationfrom BlockMatrix to IndexedRowMatrix" should "give the same matrix" in {
-    // From the offical Spark test-suite
+  "More efficient transformation from BlockMatrix to IndexedRowMatrix" should "give the same matrix" in {
+    // From the official Spark test-suite
     val m = 5
     val n = 4
     val rowPerPart = 2
@@ -32,11 +33,15 @@ class PerformanceTestTest extends FlatSpec with Matchers with BeforeAndAfter {
 
     val gridBasedMat = new BlockMatrix(spark.parallelize(blocks2, numPartitions), rowPerPart, colPerPart)
 
-    val rowMat = PerformanceTest.toIndexedRowMatrixOptimized(gridBasedMat)
-    assert(rowMat.numRows() === m)
-    assert(rowMat.numCols() === n)
-    assert(rowMat.toBreeze() === gridBasedMat.toBreeze())
+    val rowMatFullrow = gridBasedMat.toIndexedRowMatrixOptimizedFullrow
+    assert(rowMatFullrow.numRows() === m)
+    assert(rowMatFullrow.numCols() === n)
+    assert(rowMatFullrow.toBreeze() === gridBasedMat.toBreeze())
 
+    val rowMatBlockrow = gridBasedMat.toIndexedRowMatrixOptimizedBlockrow
+    assert(rowMatBlockrow.numRows() === m)
+    assert(rowMatBlockrow.numCols() === n)
+    assert(rowMatBlockrow.toBreeze() === gridBasedMat.toBreeze())
   }
 
 }
